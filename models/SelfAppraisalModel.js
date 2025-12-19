@@ -111,7 +111,7 @@ const selfAppraisalSchema = new mongoose.Schema({
 });
 
 // Calculate overall score before saving
-selfAppraisalSchema.pre("save", function() {
+selfAppraisalSchema.pre("save", function(next) {
   if (this.ratings.length > 0) {
     let totalWeightedScore = 0;
     let totalWeightage = 0;
@@ -129,7 +129,7 @@ selfAppraisalSchema.pre("save", function() {
   }
   
   this.updatedAt = Date.now();
-  
+  next();
 });
 
 module.exports = mongoose.model("SelfAppraisal", selfAppraisalSchema);
