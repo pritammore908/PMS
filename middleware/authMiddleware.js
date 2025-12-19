@@ -1,7 +1,7 @@
 // middleware/authMiddleware.js
 const jwt = require("jsonwebtoken");
 
-const authMiddleware = (req, res, next) => {
+const authMiddleware = (req, res ) => {
   try {
     // Get token from header
     const token = req.header("Authorization")?.replace("Bearer ", "");
@@ -18,7 +18,7 @@ const authMiddleware = (req, res, next) => {
     
     // Add user info to request
     req.user = decoded;
-    next();
+   
   } catch (error) {
     return res.status(401).json({
       success: false,

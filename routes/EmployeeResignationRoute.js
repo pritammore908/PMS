@@ -3,9 +3,9 @@ const router = express.Router();
 const employeeResignationController = require("../controllers/employeeResignationController");
 
 // Debug middleware - logs all requests
-router.use((req, res, next) => {
+router.use((req, res) => {
   console.log(`${req.method} ${req.originalUrl}`);
-  next();
+  
 });
 
 // @route   POST /api/employee-resignation
