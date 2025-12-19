@@ -159,7 +159,7 @@ employeeResignationSchema.index({ department: 1 });
 employeeResignationSchema.index({ reportingManager: 1 });
 
 // Hash password before saving
-employeeResignationSchema.pre('save', async function(next) {
+employeeResignationSchema.pre('save', async function() {
   try {
     // Only generate new employeeId if it's a new document
     if (this.isNew) {
@@ -197,9 +197,9 @@ employeeResignationSchema.pre('save', async function(next) {
       this.password = await bcrypt.hash(this.password, salt);
     }
     
-    next();
+   
   } catch (error) {
-    next(error);
+    
   }
 });
 
