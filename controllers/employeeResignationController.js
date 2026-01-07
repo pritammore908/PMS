@@ -4,9 +4,17 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 // Generate JWT Token for employee
-const generateEmployeeToken = (employeeId, email) => {
+// Generate JWT Token for employee - FIXED VERSION
+const generateEmployeeToken = (employee) => {
   return jwt.sign(
-    { id: employeeId, email, type: "employee" },
+    { 
+      id: employee._id, // Use MongoDB _id
+      employeeId: employee.employeeId, 
+      email: employee.email,
+      workEmail: employee.workEmail,
+      fullName: employee.fullName,
+      type: "employee" 
+    },
     process.env.JWT_SECRET || "your-secret-key-change-this-in-production",
     { expiresIn: process.env.JWT_EXPIRE || "30d" }
   );
@@ -228,7 +236,7 @@ exports.getAllResignations = async (req, res) => {
   try {
     const {
       page = 1,
-      limit = 10,
+      limit = 1000,
       search = "",
       status = "",
       sortBy = "createdAt",
@@ -570,11 +578,16 @@ exports.deleteResignation = async (req, res) => {
   }
 };
 
+
+// @desc    Bulk upload resignations from Excel
+// @route   POST /api/employee-resignation/bulk-upload
+// @access  Public
 // @desc    Bulk upload resignations from Excel
 // @route   POST /api/employee-resignation/bulk-upload
 // @access  Public
 exports.bulkUploadResignations = async (req, res) => {
   try {
+    console.log("=== BULK UPLOAD START ===");
     const { resignations } = req.body;
 
     if (!Array.isArray(resignations) || resignations.length === 0) {
@@ -584,86 +597,309 @@ exports.bulkUploadResignations = async (req, res) => {
       });
     }
 
+    console.log(`Processing ${resignations.length} records from Excel...`);
+    
     const validResignations = [];
     const errors = [];
+    const duplicateChecks = {
+      emails: new Set(),
+      workEmails: new Set(),
+      phones: new Set(),
+      panNos: new Set()
+    };
 
+    // Step 1: Validate and prepare all records
     for (let i = 0; i < resignations.length; i++) {
-      const resignation = resignations[i];
+      const row = resignations[i];
+      const rowNumber = i + 1;
       
-      if (!resignation.fullName || !resignation.email || !resignation.workEmail || !resignation.password) {
-        errors.push(`Row ${i + 1}: Full Name, Email, Work Email and Password are required`);
-        continue;
-      }
+      try {
+        // DEBUG: Log what we're receiving
+        console.log(`Row ${rowNumber} - Raw data:`, {
+          fullName: row.fullName,
+          email: row.email,
+          workEmail: row.workEmail,
+          phone: row.phone,
+          passwordLength: row.password?.length
+        });
 
-      if (resignation.password.length < 6) {
-        errors.push(`Row ${i + 1}: Password must be at least 6 characters`);
-        continue;
-      }
+        // Validate required fields
+        if (!row.fullName?.trim()) {
+          errors.push(`Row ${rowNumber}: Full Name is required`);
+          continue;
+        }
+        
+        if (!row.email?.trim()) {
+          errors.push(`Row ${rowNumber}: Personal Email is required`);
+          continue;
+        }
+        
+        if (!row.workEmail?.trim()) {
+          errors.push(`Row ${rowNumber}: Work Email is required`);
+          continue;
+        }
+        
+        if (!row.password?.trim()) {
+          errors.push(`Row ${rowNumber}: Password is required`);
+          continue;
+        }
 
-      const existingEmail = await EmployeeResignation.findOne({ email: resignation.email });
-      if (existingEmail) {
-        errors.push(`Row ${i + 1}: Personal email ${resignation.email} already exists`);
-        continue;
-      }
+        // Validate password length
+        if (row.password.length < 6) {
+          errors.push(`Row ${rowNumber}: Password must be at least 6 characters`);
+          continue;
+        }
 
-      const existingWorkEmail = await EmployeeResignation.findOne({ workEmail: resignation.workEmail });
-      if (existingWorkEmail) {
-        errors.push(`Row ${i + 1}: Work email ${resignation.workEmail} already exists`);
-        continue;
-      }
+        const email = row.email.toLowerCase().trim();
+        const workEmail = row.workEmail.toLowerCase().trim();
+        const phone = row.phone ? String(row.phone).replace(/\D/g, '') : '';
+        const panNo = row.panNo ? row.panNo.toUpperCase().replace(/\s/g, '') : '';
 
-      validResignations.push({
-        fullName: resignation.fullName,
-        birthDate: resignation.birthDate || null,
-        email: resignation.email,
-        workEmail: resignation.workEmail,
-        phone: resignation.phone || "",
-        emergencyContact: resignation.emergencyContact || "",
-        hireDate: resignation.hireDate || null,
-        department: resignation.department || "",
-        reportingManager: resignation.reportingManager || "",
-        addedOn: resignation.addedOn || Date.now(),
-        address: resignation.address || "",
-        currentAddress: resignation.currentAddress || "",
-        pincode: resignation.pincode || "",
-        state: resignation.state || "",
-        city: resignation.city || "",
-        panNo: resignation.panNo || "",
-        password: resignation.password,
-        resignationDate: resignation.resignationDate || Date.now(),
-        lastWorkingDay: resignation.lastWorkingDay || null,
-        resignationReason: resignation.resignationReason || "",
-        status: resignation.status || "Pending",
-      });
+        // Check for duplicates within the same upload
+        if (duplicateChecks.emails.has(email)) {
+          errors.push(`Row ${rowNumber}: Duplicate email ${email} in upload file`);
+          continue;
+        }
+        
+        if (duplicateChecks.workEmails.has(workEmail)) {
+          errors.push(`Row ${rowNumber}: Duplicate work email ${workEmail} in upload file`);
+          continue;
+        }
+
+        duplicateChecks.emails.add(email);
+        duplicateChecks.workEmails.add(workEmail);
+        
+        if (phone) duplicateChecks.phones.add(phone);
+        if (panNo) duplicateChecks.panNos.add(panNo);
+
+        // Check for duplicates in database (no session needed)
+        const existingRecord = await EmployeeResignation.findOne({
+          $or: [
+            { email: email },
+            { workEmail: workEmail },
+            ...(phone ? [{ phone: phone }] : []),
+            ...(panNo ? [{ panNo: panNo }] : [])
+          ]
+        });
+
+        if (existingRecord) {
+          let duplicateField = '';
+          if (existingRecord.email === email) duplicateField = 'email';
+          else if (existingRecord.workEmail === workEmail) duplicateField = 'work email';
+          else if (existingRecord.phone === phone) duplicateField = 'phone';
+          else if (existingRecord.panNo === panNo) duplicateField = 'PAN number';
+          
+          errors.push(`Row ${rowNumber}: ${duplicateField} already exists in database`);
+          continue;
+        }
+
+        // HASH THE PASSWORD MANUALLY (because insertMany bypasses middleware)
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(row.password, salt);
+
+        // Prepare the resignation data
+        const resignationData = {
+          fullName: row.fullName.trim(),
+          birthDate: row.birthDate ? new Date(row.birthDate) : null,
+          email: email,
+          workEmail: workEmail,
+          phone: phone || "",
+          emergencyContact: row.emergencyContact ? String(row.emergencyContact).replace(/\D/g, '') : "",
+          hireDate: row.hireDate ? new Date(row.hireDate) : null,
+          department: row.department?.trim() || "",
+          reportingManager: row.reportingManager?.trim() || "",
+          addedOn: row.addedOn ? new Date(row.addedOn) : new Date(),
+          address: row.address?.trim() || "",
+          currentAddress: row.currentAddress?.trim() || "",
+          pincode: row.pincode ? String(row.pincode).replace(/\D/g, '') : "",
+          state: row.state?.trim() || "",
+          city: row.city?.trim() || "",
+          panNo: panNo || "",
+          password: hashedPassword, // Use the HASHED password
+          resignationDate: row.resignationDate ? new Date(row.resignationDate) : new Date(),
+          lastWorkingDay: row.lastWorkingDay ? new Date(row.lastWorkingDay) : null,
+          resignationReason: row.resignationReason?.trim() || "",
+          status: row.status || "Pending",
+          isActive: true,
+          loginAttempts: 0
+        };
+
+        // Validate PAN format if provided
+        if (panNo && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(panNo)) {
+          errors.push(`Row ${rowNumber}: Invalid PAN number format (should be ABCDE1234F)`);
+          continue;
+        }
+
+        // Validate phone format if provided
+        if (phone && !/^[0-9]{10}$/.test(phone)) {
+          errors.push(`Row ${rowNumber}: Phone must be exactly 10 digits`);
+          continue;
+        }
+
+        validResignations.push(resignationData);
+        console.log(`✅ Row ${rowNumber} validated: ${row.fullName} (Password hashed)`);
+
+      } catch (error) {
+        console.error(`❌ Error processing row ${rowNumber}:`, error.message);
+        errors.push(`Row ${rowNumber}: ${error.message}`);
+      }
     }
 
+    console.log(`Validation complete: ${validResignations.length} valid, ${errors.length} errors`);
+    
     if (validResignations.length === 0) {
       return res.status(400).json({
         success: false,
         error: "No valid resignation records to upload",
-        details: errors,
+        details: errors.slice(0, 5),
       });
     }
 
-    const insertedResignations = await EmployeeResignation.insertMany(validResignations);
-    const employeeIds = insertedResignations.map(res => res.employeeId);
+    // Step 2: Insert all valid records WITHOUT TRANSACTION
+    console.log(`Inserting ${validResignations.length} records...`);
+    let insertedResignations;
+    
+    try {
+      insertedResignations = await EmployeeResignation.insertMany(validResignations, {
+        ordered: false // Continue on error even if some fail
+      });
+      
+      console.log(`✅ Successfully inserted ${insertedResignations.length} records`);
+    } catch (insertError) {
+      console.error("Error during insertMany:", insertError);
+      
+      // Handle bulk write errors
+      if (insertError.writeErrors) {
+        insertError.writeErrors.forEach(writeError => {
+          const rowIndex = writeError.index;
+          const rowData = validResignations[rowIndex];
+          errors.push(`Row with email ${rowData?.email}: ${writeError.errmsg}`);
+        });
+        
+        // Filter out successfully inserted documents
+        insertedResignations = insertError.insertedDocs || [];
+      } else {
+        // For other errors, rethrow
+        throw insertError;
+      }
+    }
 
-    res.status(201).json({
+    // Step 3: Generate JWT tokens for successfully inserted employees
+    const tokenResults = [];
+    
+    for (const employee of insertedResignations) {
+      try {
+        // Generate JWT token
+        const token = jwt.sign(
+          {
+            id: employee._id.toString(),
+            employeeId: employee.employeeId,
+            email: employee.email,
+            workEmail: employee.workEmail,
+            fullName: employee.fullName,
+            department: employee.department,
+            type: "employee"
+          },
+          process.env.JWT_SECRET || "your-secret-key-change-this-in-production",
+          { expiresIn: "30d" }
+        );
+        
+        tokenResults.push({
+          success: true,
+          employeeId: employee.employeeId,
+          fullName: employee.fullName,
+          email: employee.email,
+          workEmail: employee.workEmail,
+          department: employee.department,
+          status: employee.status,
+          token: token
+        });
+        
+        console.log(`✅ Generated token for ${employee.email} (${employee.employeeId})`);
+        
+      } catch (tokenError) {
+        console.error(`❌ Token generation failed for ${employee.email}:`, tokenError.message);
+        tokenResults.push({
+          success: false,
+          employeeId: employee.employeeId,
+          email: employee.email,
+          error: tokenError.message
+        });
+      }
+    }
+
+    // Step 4: Prepare response
+    const successfulTokens = tokenResults.filter(t => t.success);
+    const successfulInserts = insertedResignations.length;
+    
+    const responseData = {
       success: true,
-      message: `${insertedResignations.length} resignation(s) uploaded successfully`,
-      data: insertedResignations,
-      employeeIds: employeeIds,
-      errors: errors.length > 0 ? errors : undefined,
-    });
+      message: `${successfulInserts} resignation(s) uploaded successfully`,
+      count: successfulInserts,
+      data: {
+        employees: insertedResignations.map(emp => ({
+          employeeId: emp.employeeId,
+          fullName: emp.fullName,
+          email: emp.email,
+          workEmail: emp.workEmail,
+          department: emp.department,
+          status: emp.status,
+          createdAt: emp.createdAt
+        })),
+        tokens: successfulTokens.map(t => ({
+          employeeId: t.employeeId,
+          email: t.email,
+          token: t.token
+        }))
+      },
+      summary: {
+        totalRecords: resignations.length,
+        validRecords: validResignations.length,
+        successfullyInserted: successfulInserts,
+        tokensGenerated: successfulTokens.length,
+        validationErrors: errors.length
+      }
+    };
+
+    // Add errors to response if there were any
+    if (errors.length > 0) {
+      responseData.errors = errors.slice(0, 20); // Limit to first 20 errors
+      responseData.totalErrors = errors.length;
+    }
+
+    console.log("=== BULK UPLOAD COMPLETE ===");
+    console.log(`📊 Summary:`);
+    console.log(`  - Total processed: ${resignations.length}`);
+    console.log(`  - Valid records: ${validResignations.length}`);
+    console.log(`  - Successfully inserted: ${successfulInserts}`);
+    console.log(`  - Tokens generated: ${successfulTokens.length}`);
+    console.log(`  - Errors: ${errors.length}`);
+    
+    res.status(201).json(responseData);
+
   } catch (error) {
-    console.error("Error in bulk upload:", error);
+    console.error("❌ Critical error in bulk upload:", error);
+    
+    // Handle specific error types
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      const value = error.keyValue[field];
+      
+      return res.status(400).json({
+        success: false,
+        error: `Duplicate ${field} found: ${value}`,
+        code: "DUPLICATE_ERROR"
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      error: error.message || "Server error",
+      error: "Server error during bulk upload",
+      message: error.message,
+      code: "SERVER_ERROR"
     });
   }
 };
-
 // @desc    Get resignation statistics
 // @route   GET /api/employee-resignation/stats
 // @access  Public
